@@ -1,20 +1,20 @@
 var expect = require('expect.js');
 var path = require('path');
-var fs = require('graceful-fs');
+var fs = require('../../../lib/util/fs');
 var path = require('path');
-var rimraf = require('rimraf');
+var rimraf = require('../../../lib/util/rimraf');
 var mkdirp = require('mkdirp');
 var Q = require('q');
+var Logger = require('bower-logger');
 var cmd = require('../../../lib/util/cmd');
 var copy = require('../../../lib/util/copy');
 var FsResolver = require('../../../lib/core/resolvers/FsResolver');
-var Logger = require('../../../lib/core/Logger');
 var defaultConfig = require('../../../lib/config');
 
 describe('FsResolver', function () {
     var tempSource;
     var logger;
-    var testPackage = path.resolve(__dirname, '../../assets/github-test-package');
+    var testPackage = path.resolve(__dirname, '../../assets/package-a');
 
     before(function (next) {
         logger = new Logger();
@@ -35,19 +35,19 @@ describe('FsResolver', function () {
         }
     });
 
-    function create(decEndpoint, config) {
+    function create(decEndpoint) {
         if (typeof decEndpoint === 'string') {
             decEndpoint = { source: decEndpoint };
         }
 
-        return new FsResolver(decEndpoint, config || defaultConfig, logger);
+        return new FsResolver(decEndpoint, defaultConfig(), logger);
     }
 
     describe('.constructor', function () {
         it('should guess the name from the path', function () {
-            var resolver = create(testPackage);
+            var resolver = create(path.resolve('../../assets/package-zip.zip'));
 
-            expect(resolver.getName()).to.equal('github-test-package');
+            expect(resolver.getName()).to.equal('package-zip');
         });
 
         it('should make paths absolute and normalized', function () {
@@ -82,13 +82,11 @@ describe('FsResolver', function () {
         it('should resolve always to true (for now..)', function (next) {
             var resolver = create(testPackage);
 
-            tempSource = path.resolve(__dirname, '../../assets/tmp');
-            mkdirp.sync(tempSource);
-            fs.writeFileSync(path.join(tempSource, '.bower.json'), JSON.stringify({
+            var pkgMeta = {
                 name: 'test'
-            }));
+            };
 
-            resolver.hasNew(tempSource)
+            resolver.hasNew(pkgMeta)
             .then(function (hasNew) {
                 expect(hasNew).to.be(true);
                 next();
@@ -161,7 +159,7 @@ describe('FsResolver', function () {
         it('should rename to index if source is a folder with just one file in it', function (next) {
             var resolver;
 
-            tempSource = path.resolve(__dirname, '../../assets/tmp');
+            tempSource = path.resolve(__dirname, '../../tmp/tmp');
 
             mkdirp.sync(tempSource);
             resolver = create(tempSource);
@@ -178,11 +176,40 @@ describe('FsResolver', function () {
             .done();
         });
 
+        it('should not rename to index if source is a folder with just bower.json/component.json file in it', function (next) {
+            var resolver;
+
+            tempSource = path.resolve(__dirname, '../../tmp/tmp');
+
+            mkdirp.sync(tempSource);
+            resolver = create(tempSource);
+
+            copy.copyFile(path.join(testPackage, 'bower.json'), path.join(tempSource, 'bower.json'))
+            .then(resolver.resolve.bind(resolver))
+            .then(function (dir) {
+                expect(fs.existsSync(path.join(dir, 'bower.json'))).to.be(true);
+
+                rimraf.sync(tempSource);
+                mkdirp.sync(tempSource);
+
+                resolver = create(tempSource);
+            })
+            .then(copy.copyFile.bind(copy, path.join(testPackage, 'bower.json'), path.join(tempSource, 'component.json')))
+            .then(function () {
+                return resolver.resolve();
+            })
+            .then(function (dir) {
+                expect(fs.existsSync(path.join(dir, 'component.json'))).to.be(true);
+                next();
+            })
+            .done();
+        });
+
         it('should copy the source directory permissions', function (next) {
             var mode0777;
             var resolver;
 
-            tempSource = path.resolve(__dirname, '../../assets/github-test-package-copy');
+            tempSource = path.resolve(__dirname, '../../assets/package-a-copy');
             resolver = create(tempSource);
 
             copy.copyDir(testPackage, tempSource)
@@ -206,7 +233,7 @@ describe('FsResolver', function () {
             var mode0777;
             var resolver;
 
-            tempSource = path.resolve(__dirname, '../../assets/temp');
+            tempSource = path.resolve(__dirname, '../../tmp/temp-source');
             resolver = create(tempSource);
 
             copy.copyFile(path.join(testPackage, 'foo'), tempSource)
@@ -302,6 +329,12 @@ describe('FsResolver', function () {
                 .then(next.bind(next, null));
             })
             .done();
+        });
+    });
+
+    describe('#isTargetable', function () {
+        it('should return false', function () {
+            expect(FsResolver.isTargetable()).to.be(false);
         });
     });
 });

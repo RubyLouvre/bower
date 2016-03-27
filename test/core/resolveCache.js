@@ -1,29 +1,29 @@
 var path = require('path');
 var mout = require('mout');
-var rimraf = require('rimraf');
-var fs = require('graceful-fs');
+var rimraf = require('../../lib/util/rimraf');
+var fs = require('../../lib/util/fs');
 var Q = require('q');
 var expect = require('expect.js');
 var mkdirp = require('mkdirp');
+var md5 = require('md5-hex');
 var ResolveCache = require('../../lib/core/ResolveCache');
 var defaultConfig = require('../../lib/config');
 var cmd = require('../../lib/util/cmd');
 var copy = require('../../lib/util/copy');
-var md5 = require('../../lib/util/md5');
 
 describe('ResolveCache', function () {
     var resolveCache;
-    var testPackage = path.resolve(__dirname, '../assets/github-test-package');
-    var tempPackage = path.resolve(__dirname, '../assets/temp');
-    var tempPackage2 = path.resolve(__dirname, '../assets/temp2');
-    var cacheDir = path.join(__dirname, '../assets/temp-resolve-cache');
+    var testPackage = path.resolve(__dirname, '../assets/package-a');
+    var tempPackage = path.resolve(__dirname, '../tmp/temp-package');
+    var tempPackage2 = path.resolve(__dirname, '../tmp/temp2-package');
+    var cacheDir = path.join(__dirname, '../tmp/temp-resolve-cache');
 
     before(function (next) {
         // Delete cache folder
         rimraf.sync(cacheDir);
 
         // Instantiate resolver cache
-        resolveCache = new ResolveCache(mout.object.deepMixIn(defaultConfig, {
+        resolveCache = new ResolveCache(defaultConfig({
             storage: {
                 packages: cacheDir
             }
@@ -55,7 +55,7 @@ describe('ResolveCache', function () {
         });
 
         function initialize(cacheDir) {
-            return new ResolveCache(mout.object.deepMixIn(defaultConfig, {
+            return new ResolveCache(defaultConfig({
                 storage: {
                     packages: cacheDir
                 }
@@ -132,30 +132,6 @@ describe('ResolveCache', function () {
                 expect(fs.existsSync(dir)).to.be(true);
                 expect(fs.existsSync(path.join(dir, 'baz'))).to.be(true);
                 expect(fs.existsSync(tempPackage)).to.be(false);
-
-                next();
-            })
-            .done();
-        });
-
-        it('should overwrite if the exact same package source/version exists', function (next) {
-            var cachePkgDir = path.join(cacheDir, md5('foo'), '1.0.0-rc.blehhh');
-
-            mkdirp.sync(cachePkgDir);
-            fs.writeFileSync(path.join(cachePkgDir, '_bleh'), 'w00t');
-
-            resolveCache.store(tempPackage, {
-                name: 'foo',
-                version: '1.0.0-rc.blehhh',
-                _source: 'foo',
-                _target: '*'
-            })
-            .then(function (dir) {
-                expect(dir).to.equal(cachePkgDir);
-                expect(fs.existsSync(dir)).to.be(true);
-                expect(fs.existsSync(path.join(dir, 'baz'))).to.be(true);
-                expect(fs.existsSync(tempPackage)).to.be(false);
-                expect(fs.existsSync(path.join(cachePkgDir, '_bleh'))).to.be(false);
 
                 next();
             })
@@ -241,14 +217,14 @@ describe('ResolveCache', function () {
 
             resolveCache.store(tempPackage, {
                 name: 'foo',
-                _source: 'foo',
+                _source: 'foobar',
                 _target: 'some-branch'
             })
             .then(function (dir) {
                 // Ensure mock was called
                 expect(hittedMock).to.be(true);
 
-                expect(dir).to.equal(path.join(cacheDir, md5('foo'), 'some-branch'));
+                expect(dir).to.equal(path.join(cacheDir, md5('foobar'), 'some-branch'));
                 expect(fs.existsSync(dir)).to.be(true);
                 expect(fs.existsSync(path.join(dir, 'baz'))).to.be(true);
                 expect(fs.existsSync(tempPackage)).to.be(false);
@@ -292,6 +268,47 @@ describe('ResolveCache', function () {
                 });
             })
             .done();
+        });
+
+        it('should url encode target when storing to the fs', function (next) {
+            resolveCache.store(tempPackage, {
+                name: 'foo',
+                _source: 'foo',
+                _target: 'foo/bar'
+            })
+            .then(function (dir) {
+                expect(dir).to.equal(path.join(cacheDir, md5('foo'), 'foo%2Fbar'));
+                expect(fs.existsSync(dir)).to.be(true);
+                expect(fs.existsSync(path.join(dir, 'baz'))).to.be(true);
+                expect(fs.existsSync(tempPackage)).to.be(false);
+
+                next();
+            })
+            .done();
+        });
+
+        it('should be possible to store two package at same time', function (next) {
+            var store = resolveCache.store.bind(resolveCache, tempPackage, {
+                name: 'foo',
+                _source: 'foo',
+                _target: 'foo/bar'
+            });
+            var store2 = resolveCache.store.bind(resolveCache, tempPackage2, {
+                name: 'foo',
+                _source: 'foo',
+                _target: 'foo/bar'
+            });
+
+            Q.all([store(), store2()]).then(function (dirs) {
+                var dir = dirs[0];
+                expect(dir).to.equal(path.join(cacheDir, md5('foo'), 'foo%2Fbar'));
+                expect(fs.existsSync(dir)).to.be(true);
+                expect(fs.existsSync(path.join(dir, 'baz'))).to.be(true);
+                expect(fs.existsSync(tempPackage)).to.be(false);
+                expect(fs.existsSync(tempPackage2)).to.be(false);
+
+                next();
+            }).done();
         });
     });
 
@@ -432,7 +449,7 @@ describe('ResolveCache', function () {
             .done();
         });
 
-        it('should resolve to the highest package that matches a range target', function (next) {
+        it('should resolve to the highest package that matches a range target, ignoring pre-releases', function (next) {
             var source = String(Math.random());
             var sourceId = md5(source);
             var sourceDir = path.join(cacheDir, sourceId);
@@ -448,6 +465,10 @@ describe('ResolveCache', function () {
             json.version = '0.1.0';
             fs.mkdirSync(path.join(sourceDir, '0.1.0'));
             fs.writeFileSync(path.join(sourceDir, '0.1.0', '.bower.json'), JSON.stringify(json, null, '  '));
+
+            json.version = '0.1.0-rc.1';
+            fs.mkdirSync(path.join(sourceDir, '0.1.0-rc.1'));
+            fs.writeFileSync(path.join(sourceDir, '0.1.0-rc.1', '.bower.json'), JSON.stringify(json, null, '  '));
 
             json.version = '0.1.9';
             fs.mkdirSync(path.join(sourceDir, '0.1.9'));
@@ -475,7 +496,75 @@ describe('ResolveCache', function () {
             .done();
         });
 
-        it('should resolve to the _wildcard package if target is * and there are not semver versions', function (next) {
+        it('should resolve to the highest package that matches a range target, not ignoring pre-releases if they are the only versions', function (next) {
+            var source = String(Math.random());
+            var sourceId = md5(source);
+            var sourceDir = path.join(cacheDir, sourceId);
+            var json = { name: 'foo' };
+
+            // Create some versions
+            fs.mkdirSync(sourceDir);
+
+            json.version = '0.1.0-rc.1';
+            fs.mkdirSync(path.join(sourceDir, '0.1.0-rc.1'));
+            fs.writeFileSync(path.join(sourceDir, '0.1.0-rc.1', '.bower.json'), JSON.stringify(json, null, '  '));
+
+            json.version = '0.1.0-rc.2';
+            fs.mkdirSync(path.join(sourceDir, '0.1.0-rc.2'));
+            fs.writeFileSync(path.join(sourceDir, '0.1.0-rc.2', '.bower.json'), JSON.stringify(json, null, '  '));
+
+            resolveCache.retrieve(source, '~0.1.0')
+            .spread(function (canonicalDir, pkgMeta) {
+                expect(pkgMeta).to.be.an('object');
+                expect(pkgMeta.version).to.equal('0.1.0-rc.2');
+                expect(canonicalDir).to.equal(path.join(sourceDir, '0.1.0-rc.2'));
+
+                next();
+            })
+            .done();
+        });
+
+        it('should resolve to exact match (including build metadata) if available', function (next) {
+            var source = String(Math.random());
+            var sourceId = md5(source);
+            var sourceDir = path.join(cacheDir, sourceId);
+            var json = { name: 'foo' };
+            var encoded;
+
+            // Create some versions
+            fs.mkdirSync(sourceDir);
+
+            json.version = '0.1.0';
+            fs.mkdirSync(path.join(sourceDir, '0.1.0'));
+            fs.writeFileSync(path.join(sourceDir, '0.1.0', '.bower.json'), JSON.stringify(json, null, '  '));
+
+            json.version = '0.1.0+build.4';
+            encoded = encodeURIComponent('0.1.0+build.4');
+            fs.mkdirSync(path.join(sourceDir, encoded));
+            fs.writeFileSync(path.join(sourceDir, encoded, '.bower.json'), JSON.stringify(json, null, '  '));
+
+            json.version = '0.1.0+build.5';
+            encoded = encodeURIComponent('0.1.0+build.5');
+            fs.mkdirSync(path.join(sourceDir, encoded));
+            fs.writeFileSync(path.join(sourceDir, encoded, '.bower.json'), JSON.stringify(json, null, '  '));
+
+            json.version = '0.1.0+build.6';
+            encoded = encodeURIComponent('0.1.0+build.6');
+            fs.mkdirSync(path.join(sourceDir, encoded));
+            fs.writeFileSync(path.join(sourceDir, encoded, '.bower.json'), JSON.stringify(json, null, '  '));
+
+            resolveCache.retrieve(source, '0.1.0+build.5')
+            .spread(function (canonicalDir, pkgMeta) {
+                expect(pkgMeta).to.be.an('object');
+                expect(pkgMeta.version).to.equal('0.1.0+build.5');
+                expect(canonicalDir).to.equal(path.join(sourceDir, encodeURIComponent('0.1.0+build.5')));
+
+                next();
+            })
+            .done();
+        });
+
+        it('should resolve to the _wildcard package if target is * and there are no semver versions', function (next) {
             var source = String(Math.random());
             var sourceId = md5(source);
             var sourceDir = path.join(cacheDir, sourceId);
@@ -819,15 +908,15 @@ describe('ResolveCache', function () {
                 expect(entries).to.be.an('array');
 
                 expectedJson = fs.readFileSync(path.join(__dirname, '../assets/resolve-cache/list-json-1.json'));
-                expectedJson = expectedJson.toString();
 
-                // Trim absolute bower path from json
                 mout.object.forOwn(entries, function (entry) {
+                    // Trim absolute bower path from json
                     entry.canonicalDir = entry.canonicalDir.substr(bowerDir.length);
+                    // Convert windows \ paths to /
+                    entry.canonicalDir = entry.canonicalDir.replace(/\\/g, '/');
                 });
 
-                json = JSON.stringify(entries, null, '  ');
-                expect(json).to.equal(expectedJson);
+                expect(entries).to.eql(JSON.parse(expectedJson));
 
                 next();
             })

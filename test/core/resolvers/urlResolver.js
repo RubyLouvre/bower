@@ -1,19 +1,18 @@
 var expect = require('expect.js');
 var path = require('path');
-var fs = require('graceful-fs');
-var path = require('path');
+var fs = require('../../../lib/util/fs');
 var nock = require('nock');
 var Q = require('q');
-var rimraf = require('rimraf');
+var rimraf = require('../../../lib/util/rimraf');
 var mkdirp = require('mkdirp');
+var Logger = require('bower-logger');
 var cmd = require('../../../lib/util/cmd');
 var UrlResolver = require('../../../lib/core/resolvers/UrlResolver');
-var Logger = require('../../../lib/core/Logger');
 var defaultConfig = require('../../../lib/config');
 
 describe('UrlResolver', function () {
-    var testPackage = path.resolve(__dirname, '../../assets/github-test-package');
-    var tempDir = path.resolve(__dirname, '../../assets/tmp');
+    var testPackage = path.resolve(__dirname, '../../assets/package-a');
+    var tempDir = path.resolve(__dirname, '../../tmp/tmp');
     var logger;
 
     before(function (next) {
@@ -26,30 +25,27 @@ describe('UrlResolver', function () {
 
     afterEach(function () {
         logger.removeAllListeners();
-
-        // Clean nocks
-        nock.cleanAll();
     });
 
-    function create(decEndpoint, config) {
+    function create(decEndpoint) {
         if (typeof decEndpoint === 'string') {
             decEndpoint = { source: decEndpoint };
         }
 
-        return new UrlResolver(decEndpoint, config || defaultConfig, logger);
+        return new UrlResolver(decEndpoint, defaultConfig(), logger);
     }
 
     describe('.constructor', function () {
         it('should guess the name from the URL', function () {
             var resolver = create('http://bower.io/foo.txt');
 
-            expect(resolver.getName()).to.equal('foo.txt');
+            expect(resolver.getName()).to.equal('foo');
         });
 
         it('should remove ?part from the URL when guessing the name', function () {
             var resolver = create('http://bower.io/foo.txt?bar');
 
-            expect(resolver.getName()).to.equal('foo.txt');
+            expect(resolver.getName()).to.equal('foo');
         });
 
         it('should not guess the name or remove ?part from the URL if not guessing', function () {
@@ -94,12 +90,12 @@ describe('UrlResolver', function () {
             .head('/foo.js')
             .reply(500);
 
-            fs.writeFileSync(path.join(tempDir, '.bower.json'), JSON.stringify({
+            var pkgMeta = {
                 name: 'foo',
                 version: '0.0.0'
-            }));
+            };
 
-            resolver.hasNew(tempDir)
+            resolver.hasNew(pkgMeta)
             .then(function (hasNew) {
                 expect(hasNew).to.be(true);
                 next();
@@ -117,16 +113,16 @@ describe('UrlResolver', function () {
                 'Last-Modified': 'Tue, 15 Nov 2012 12:45:26 GMT'
             });
 
-            fs.writeFileSync(path.join(tempDir, '.bower.json'), JSON.stringify({
+            var pkgMeta = {
                 name: 'foo',
                 version: '0.0.0',
                 _cacheHeaders: {
                     'ETag': 'fk3454fdmmlw20i9nf',
                     'Last-Modified': 'Tue, 16 Nov 2012 13:35:29 GMT'
                 }
-            }));
+            };
 
-            resolver.hasNew(tempDir)
+            resolver.hasNew(pkgMeta)
             .then(function (hasNew) {
                 expect(hasNew).to.be(true);
                 next();
@@ -144,16 +140,16 @@ describe('UrlResolver', function () {
                 'Last-Modified': 'Tue, 15 Nov 2012 12:45:26 GMT'
             });
 
-            fs.writeFileSync(path.join(tempDir, '.bower.json'), JSON.stringify({
+            var pkgMeta = {
                 name: 'foo',
                 version: '0.0.0',
                 _cacheHeaders: {
                     'ETag': '686897696a7c876b7e',
                     'Last-Modified': 'Tue, 15 Nov 2012 12:45:26 GMT'
                 }
-            }));
+            };
 
-            resolver.hasNew(tempDir)
+            resolver.hasNew(pkgMeta)
             .then(function (hasNew) {
                 expect(hasNew).to.be(false);
                 next();
@@ -172,16 +168,16 @@ describe('UrlResolver', function () {
                 'Last-Modified': 'Tue, 15 Nov 2012 12:45:26 GMT'
             });
 
-            fs.writeFileSync(path.join(tempDir, '.bower.json'), JSON.stringify({
+            var pkgMeta = {
                 name: 'foo',
                 version: '0.0.0',
                 _cacheHeaders: {
                     'ETag': '686897696a7c876b7e',
                     'Last-Modified': 'Tue, 15 Nov 2012 12:45:26 GMT'
                 }
-            }));
+            };
 
-            resolver.hasNew(tempDir)
+            resolver.hasNew(pkgMeta)
             .then(function (hasNew) {
                 expect(hasNew).to.be(false);
                 next();
@@ -206,18 +202,18 @@ describe('UrlResolver', function () {
             });
 
 
-            fs.writeFileSync(path.join(tempDir, '.bower.json'), JSON.stringify({
+            var pkgMeta = {
                 name: 'foo',
                 version: '0.0.0',
                 _cacheHeaders: {
                     'ETag': '686897696a7c876b7e',
                     'Last-Modified': 'Tue, 15 Nov 2012 12:45:26 GMT'
                 }
-            }));
+            };
 
             resolver = create(redirectingUrl + '/foo.js');
 
-            resolver.hasNew(tempDir)
+            resolver.hasNew(pkgMeta)
             .then(function (hasNew) {
                 expect(hasNew).to.be(false);
                 next();
@@ -355,8 +351,36 @@ describe('UrlResolver', function () {
                 expect(fs.existsSync(path.join(dir, 'package-zip'))).to.be(false);
                 expect(fs.existsSync(path.join(dir, 'package-zip-single-file'))).to.be(false);
                 expect(fs.existsSync(path.join(dir, 'package-zip-single-file.zip'))).to.be(false);
+
                 return assertMain(dir, 'index.js')
                 .then(next.bind(next, null));
+            })
+            .done();
+        });
+
+        it('should extract if source is an archive and not rename to index if inside it\'s just a just bower.json/component.json file in it', function (next) {
+            var resolver;
+
+            nock('http://bower.io')
+            .get('/package-zip-single-bower-json.zip')
+            .replyWithFile(200, path.resolve(__dirname, '../../assets/package-zip-single-bower-json.zip'))
+            .get('/package-zip-single-component-json.zip')
+            .replyWithFile(200, path.resolve(__dirname, '../../assets/package-zip-single-component-json.zip'));
+
+            resolver = create('http://bower.io/package-zip-single-bower-json.zip');
+
+            resolver.resolve()
+            .then(function (dir) {
+                expect(fs.existsSync(path.join(dir, 'bower.json'))).to.be(true);
+
+                resolver = create('http://bower.io/package-zip-single-component-json.zip');
+            })
+            .then(function () {
+                return resolver.resolve();
+            })
+            .then(function (dir) {
+                expect(fs.existsSync(path.join(dir, 'component.json'))).to.be(true);
+                next();
             })
             .done();
         });
@@ -400,6 +424,26 @@ describe('UrlResolver', function () {
             .get('/package-zip3')
             .replyWithFile(200, path.resolve(__dirname, '../../assets/package-zip.zip'), {
                 'Content-Type': ' application/zip ; charset=UTF-8'
+            })
+
+            .get('/package-zip4')
+            .replyWithFile(200, path.resolve(__dirname, '../../assets/package-zip.zip'), {
+                'Content-Type': '"application/x-zip"'  // Test with quotes
+            })
+
+            .get('/package-tar')
+            .replyWithFile(200, path.resolve(__dirname, '../../assets/package-tar.tar.gz'), {
+                'Content-Type': ' application/x-tgz ; charset=UTF-8'
+            })
+
+            .get('/package-tar.tar.gz')
+            .replyWithFile(200, path.resolve(__dirname, '../../assets/package-tar.tar.gz'), {
+                'Content-Type': ' application/x-tgz ; charset=UTF-8'
+            })
+
+            .get('/package-tar2.tar.gz')
+            .replyWithFile(200, path.resolve(__dirname, '../../assets/package-tar.tar.gz'), {
+                'Content-Type': ' application/octet-stream ; charset=UTF-8'
             });
 
             resolver = create('http://bower.io/package-zip');
@@ -419,7 +463,7 @@ describe('UrlResolver', function () {
                 expect(fs.existsSync(path.join(dir, 'foo.js'))).to.be(true);
                 expect(fs.existsSync(path.join(dir, 'bar.js'))).to.be(true);
                 expect(fs.existsSync(path.join(dir, 'package-zip'))).to.be(false);
-                expect(fs.existsSync(path.join(dir, 'package-zip2.zip'))).to.be(false);
+                expect(fs.existsSync(path.join(dir, 'package-zip3.zip'))).to.be(false);
 
                 resolver = create('http://bower.io/package-zip3');
 
@@ -429,7 +473,46 @@ describe('UrlResolver', function () {
                 expect(fs.existsSync(path.join(dir, 'foo.js'))).to.be(true);
                 expect(fs.existsSync(path.join(dir, 'bar.js'))).to.be(true);
                 expect(fs.existsSync(path.join(dir, 'package-zip'))).to.be(false);
-                expect(fs.existsSync(path.join(dir, 'package-zip3.zip'))).to.be(false);
+                expect(fs.existsSync(path.join(dir, 'package-zip4.zip'))).to.be(false);
+
+                resolver = create('http://bower.io/package-zip4');
+
+                return resolver.resolve();
+            })
+            .then(function (dir) {
+                expect(fs.existsSync(path.join(dir, 'foo.js'))).to.be(true);
+                expect(fs.existsSync(path.join(dir, 'bar.js'))).to.be(true);
+                expect(fs.existsSync(path.join(dir, 'package-tar'))).to.be(false);
+
+                resolver = create('http://bower.io/package-tar');
+
+                return resolver.resolve();
+            })
+            .then(function (dir) {
+                expect(fs.existsSync(path.join(dir, 'foo.js'))).to.be(true);
+                expect(fs.existsSync(path.join(dir, 'bar.js'))).to.be(true);
+                expect(fs.existsSync(path.join(dir, 'package-tar'))).to.be(false);
+                expect(fs.existsSync(path.join(dir, 'package-tar.tar.gz'))).to.be(false);
+
+                resolver = create('http://bower.io/package-tar.tar.gz');
+
+                return resolver.resolve();
+            })
+            .then(function (dir) {
+                expect(fs.existsSync(path.join(dir, 'foo.js'))).to.be(true);
+                expect(fs.existsSync(path.join(dir, 'bar.js'))).to.be(true);
+                expect(fs.existsSync(path.join(dir, 'package-tar'))).to.be(false);
+                expect(fs.existsSync(path.join(dir, 'package-tar.tar.gz'))).to.be(false);
+
+                resolver = create('http://bower.io/package-tar2.tar.gz');
+
+                return resolver.resolve();
+            })
+            .then(function (dir) {
+                expect(fs.existsSync(path.join(dir, 'foo.js'))).to.be(true);
+                expect(fs.existsSync(path.join(dir, 'bar.js'))).to.be(true);
+                expect(fs.existsSync(path.join(dir, 'package-tar'))).to.be(false);
+                expect(fs.existsSync(path.join(dir, 'package-tar.tar.gz'))).to.be(false);
 
                 next();
             })
@@ -477,6 +560,32 @@ describe('UrlResolver', function () {
                     expect(pkgMeta._release).to.equal('e-tag:686897696a');
                     next();
                 });
+            })
+            .done();
+        });
+
+        it('should allow for query strings in URL', function (next) {
+            var resolver;
+
+            nock('http://bower.io')
+            .get('/foo.js?bar=baz')
+            .reply(200, 'foo contents');
+
+            resolver = create('http://bower.io/foo.js?bar=baz');
+
+            resolver.resolve()
+            .then(function (dir) {
+                var contents;
+
+                expect(fs.existsSync(path.join(dir, 'index.js'))).to.be(true);
+                expect(fs.existsSync(path.join(dir, 'foo.js'))).to.be(false);
+                expect(fs.existsSync(path.join(dir, 'foo.js?bar=baz'))).to.be(false);
+
+                contents = fs.readFileSync(path.join(dir, 'index.js')).toString();
+                expect(contents).to.equal('foo contents');
+
+                assertMain(dir, 'index.js')
+                .then(next.bind(next, null));
             })
             .done();
         });
@@ -539,6 +648,8 @@ describe('UrlResolver', function () {
             })
             .done();
         });
+
+        it.skip('it should error out if the status code is not within 200-299');
 
         it.skip('should report progress when it takes too long to download');
 
@@ -646,6 +757,12 @@ describe('UrlResolver', function () {
                 .then(next.bind(next, null))
                 .done();
             });
+        });
+    });
+
+    describe('#isTargetable', function () {
+        it('should return false', function () {
+            expect(UrlResolver.isTargetable()).to.be(false);
         });
     });
 });

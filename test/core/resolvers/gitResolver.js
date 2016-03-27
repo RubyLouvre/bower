@@ -1,20 +1,21 @@
 var expect = require('expect.js');
 var util = require('util');
 var path = require('path');
-var fs = require('graceful-fs');
+var fs = require('../../../lib/util/fs');
 var chmodr = require('chmodr');
-var rimraf = require('rimraf');
+var rimraf = require('../../../lib/util/rimraf');
 var mkdirp = require('mkdirp');
 var Q = require('q');
 var mout = require('mout');
+var Logger = require('bower-logger');
 var copy = require('../../../lib/util/copy');
 var GitResolver = require('../../../lib/core/resolvers/GitResolver');
-var Logger = require('../../../lib/core/Logger');
 var defaultConfig = require('../../../lib/config');
 
 describe('GitResolver', function () {
-    var tempDir = path.resolve(__dirname, '../../assets/tmp');
+    var tempDir = path.resolve(__dirname, '../../tmp/tmp');
     var originalrefs = GitResolver.refs;
+    var originalEnv = process.env;
     var logger;
 
     before(function () {
@@ -23,6 +24,7 @@ describe('GitResolver', function () {
 
     afterEach(function () {
         logger.removeAllListeners();
+        process.env = originalEnv;
     });
 
     function clearResolverRuntimeCache() {
@@ -30,13 +32,36 @@ describe('GitResolver', function () {
         GitResolver.clearRuntimeCache();
     }
 
-    function create(decEndpoint, config) {
+    function create(decEndpoint) {
         if (typeof decEndpoint === 'string') {
             decEndpoint = { source: decEndpoint };
         }
 
-        return new GitResolver(decEndpoint, config || defaultConfig, logger);
+        return new GitResolver(decEndpoint, defaultConfig(), logger);
     }
+
+    describe('misc', function () {
+        it.skip('should error out if git is not installed');
+        it.skip('should setup git template dir to an empty folder');
+        it('should set process.env.GIT_SSL_NO_VERIFY when strictSSL is false', function () {
+            var resolver;
+            var decEndpoint = { source: 'foo'};
+
+            expect(process.env).to.not.have.property('GIT_SSL_NO_VERIFY');
+
+            resolver = new GitResolver(decEndpoint, defaultConfig(), logger);
+            expect(process.env).to.have.property('GIT_SSL_NO_VERIFY', 'false');
+            delete process.env.GIT_SSL_NO_VERIFY;
+
+            resolver = new GitResolver(decEndpoint, defaultConfig({strictSsl: false}), logger);
+            expect(process.env).to.have.property('GIT_SSL_NO_VERIFY', 'true');
+            delete process.env.GIT_SSL_NO_VERIFY;
+
+            resolver = new GitResolver(decEndpoint, defaultConfig({strictSsl: true}), logger);
+            expect(process.env).to.have.property('GIT_SSL_NO_VERIFY', 'false');
+            delete process.env.GIT_SSL_NO_VERIFY;
+        });
+    });
 
     describe('.hasNew', function () {
         before(function () {
@@ -56,7 +81,7 @@ describe('GitResolver', function () {
         it('should be true when the resolution type is different', function (next) {
             var resolver;
 
-            fs.writeFileSync(path.join(tempDir, '.bower.json'), JSON.stringify({
+            var pkgMeta = {
                 name: 'foo',
                 version: '0.0.0',
                 _resolution: {
@@ -64,7 +89,8 @@ describe('GitResolver', function () {
                     tag: '0.0.0',
                     commit: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
                 }
-            }));
+            };
+
             GitResolver.refs = function () {
                 return Q.resolve([
                     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/heads/master'  // same commit hash on purpose
@@ -72,7 +98,7 @@ describe('GitResolver', function () {
             };
 
             resolver = create('foo');
-            resolver.hasNew(tempDir)
+            resolver.hasNew(pkgMeta)
             .then(function (hasNew) {
                 expect(hasNew).to.be(true);
                 next();
@@ -83,7 +109,7 @@ describe('GitResolver', function () {
         it('should be true when a higher version for a range is available', function (next) {
             var resolver;
 
-            fs.writeFileSync(path.join(tempDir, '.bower.json'), JSON.stringify({
+            var pkgMeta = {
                 name: 'foo',
                 version: '1.0.0',
                 _resolution: {
@@ -91,7 +117,8 @@ describe('GitResolver', function () {
                     tag: '1.0.0',
                     commit: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
                 }
-            }));
+            };
+
             GitResolver.refs = function () {
                 return Q.resolve([
                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa refs/heads/master',
@@ -101,7 +128,7 @@ describe('GitResolver', function () {
             };
 
             resolver = create('foo');
-            resolver.hasNew(tempDir)
+            resolver.hasNew(pkgMeta)
             .then(function (hasNew) {
                 expect(hasNew).to.be(true);
                 next();
@@ -112,7 +139,7 @@ describe('GitResolver', function () {
         it('should be true when a resolved to a lower version of a range', function (next) {
             var resolver;
 
-            fs.writeFileSync(path.join(tempDir, '.bower.json'), JSON.stringify({
+            var pkgMeta = {
                 name: 'foo',
                 version: '1.0.1',
                 _resolution: {
@@ -120,7 +147,8 @@ describe('GitResolver', function () {
                     tag: '1.0.1',
                     commit: 'cccccccccccccccccccccccccccccccccccccccc'
                 }
-            }));
+            };
+
             GitResolver.refs = function () {
                 return Q.resolve([
                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa refs/heads/master',
@@ -129,7 +157,7 @@ describe('GitResolver', function () {
             };
 
             resolver = create('foo');
-            resolver.hasNew(tempDir)
+            resolver.hasNew(pkgMeta)
             .then(function (hasNew) {
                 expect(hasNew).to.be(true);
                 next();
@@ -140,7 +168,7 @@ describe('GitResolver', function () {
         it('should be false when resolved to the same tag (with same commit hash) for a given range', function (next) {
             var resolver;
 
-            fs.writeFileSync(path.join(tempDir, '.bower.json'), JSON.stringify({
+            var pkgMeta = {
                 name: 'foo',
                 version: '1.0.1',
                 _resolution: {
@@ -148,7 +176,8 @@ describe('GitResolver', function () {
                     tag: '1.0.1',
                     commit: 'cccccccccccccccccccccccccccccccccccccccc'
                 }
-            }));
+            };
+
             GitResolver.refs = function () {
                 return Q.resolve([
                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa refs/heads/master',
@@ -158,7 +187,7 @@ describe('GitResolver', function () {
             };
 
             resolver = create('foo');
-            resolver.hasNew(tempDir)
+            resolver.hasNew(pkgMeta)
             .then(function (hasNew) {
                 expect(hasNew).to.be(false);
                 next();
@@ -169,7 +198,7 @@ describe('GitResolver', function () {
         it('should be true when resolved to the same tag (with different commit hash) for a given range', function (next) {
             var resolver;
 
-            fs.writeFileSync(path.join(tempDir, '.bower.json'), JSON.stringify({
+            var pkgMeta = {
                 name: 'foo',
                 version: '1.0.1',
                 _resolution: {
@@ -177,7 +206,8 @@ describe('GitResolver', function () {
                     tag: '1.0.1',
                     commit: 'cccccccccccccccccccccccccccccccccccccccc'
                 }
-            }));
+            };
+
             GitResolver.refs = function () {
                 return Q.resolve([
                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa refs/heads/master',
@@ -187,7 +217,7 @@ describe('GitResolver', function () {
             };
 
             resolver = create('foo');
-            resolver.hasNew(tempDir)
+            resolver.hasNew(pkgMeta)
             .then(function (hasNew) {
                 expect(hasNew).to.be(true);
                 next();
@@ -198,14 +228,15 @@ describe('GitResolver', function () {
         it('should be true when a different commit hash for a given branch is available', function (next) {
             var resolver;
 
-            fs.writeFileSync(path.join(tempDir, '.bower.json'), JSON.stringify({
+            var pkgMeta = {
                 name: 'foo',
                 _resolution: {
                     type: 'branch',
                     branch: 'master',
                     commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
                 }
-            }));
+            };
+
             GitResolver.refs = function () {
                 return Q.resolve([
                     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/heads/master'
@@ -213,7 +244,7 @@ describe('GitResolver', function () {
             };
 
             resolver = create('foo');
-            resolver.hasNew(tempDir)
+            resolver.hasNew(pkgMeta)
             .then(function (hasNew) {
                 expect(hasNew).to.be(true);
                 next();
@@ -224,14 +255,15 @@ describe('GitResolver', function () {
         it('should be false when resolved to the the same commit hash for a given branch', function (next) {
             var resolver;
 
-            fs.writeFileSync(path.join(tempDir, '.bower.json'), JSON.stringify({
+            var pkgMeta = {
                 name: 'foo',
                 _resolution: {
                     type: 'branch',
                     branch: 'master',
                     commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
                 }
-            }));
+            };
+
             GitResolver.refs = function () {
                 return Q.resolve([
                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa refs/heads/master'
@@ -239,7 +271,7 @@ describe('GitResolver', function () {
             };
 
             resolver = create('foo');
-            resolver.hasNew(tempDir)
+            resolver.hasNew(pkgMeta)
             .then(function (hasNew) {
                 expect(hasNew).to.be(false);
                 next();
@@ -250,13 +282,14 @@ describe('GitResolver', function () {
         it('should be false when targeting commit hashes', function (next) {
             var resolver;
 
-            fs.writeFileSync(path.join(tempDir, '.bower.json'), JSON.stringify({
+            var pkgMeta = {
                 name: 'foo',
                 _resolution: {
                     type: 'commit',
                     commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
                 }
-            }));
+            };
+
             GitResolver.refs = function () {
                 return Q.resolve([
                     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/heads/master'
@@ -264,7 +297,7 @@ describe('GitResolver', function () {
             };
 
             resolver = create('foo');
-            resolver.hasNew(tempDir)
+            resolver.hasNew(pkgMeta)
             .then(function (hasNew) {
                 expect(hasNew).to.be(true);
                 next();
@@ -329,7 +362,7 @@ describe('GitResolver', function () {
                 }.bind(this));
             };
 
-            resolver = new DummyResolver({ source: 'foo', target: 'master' }, defaultConfig, logger);
+            resolver = new DummyResolver({ source: 'foo', target: 'master' }, defaultConfig(), logger);
 
             resolver.resolve()
             .then(function () {
@@ -451,14 +484,15 @@ describe('GitResolver', function () {
             .done();
         });
 
-        it('should resolve "*" to the latest version if a repository has valid semver tags', function (next) {
+        it('should resolve "*" to the latest version if a repository has valid semver tags, ignoring pre-releases', function (next) {
             var resolver;
 
             GitResolver.refs = function () {
                 return Q.resolve([
                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa refs/heads/master',
                     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/tags/0.1.0',
-                    'cccccccccccccccccccccccccccccccccccccccc refs/tags/v0.1.1'
+                    'cccccccccccccccccccccccccccccccccccccccc refs/tags/v0.1.1',
+                    'dddddddddddddddddddddddddddddddddddddddd refs/tags/0.2.0-rc.1'  // Should ignore release candidates
                 ]);
             };
 
@@ -468,6 +502,79 @@ describe('GitResolver', function () {
                 expect(resolution).to.eql({
                     type: 'version',
                     tag: 'v0.1.1',
+                    commit: 'cccccccccccccccccccccccccccccccccccccccc'
+                });
+                next();
+            })
+            .done();
+        });
+
+        it('should resolve "0.1.*" to the latest version if a repository has valid semver tags, ignoring pre-releases', function (next) {
+            var resolver;
+
+            GitResolver.refs = function () {
+                return Q.resolve([
+                    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa refs/heads/master',
+                    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/tags/0.1.0',
+                    'cccccccccccccccccccccccccccccccccccccccc refs/tags/v0.1.1',
+                    'dddddddddddddddddddddddddddddddddddddddd refs/tags/0.1.2-rc.1'  // Should ignore release candidates
+                ]);
+            };
+
+            resolver = create('foo');
+            resolver._findResolution('0.1.*')
+            .then(function (resolution) {
+                expect(resolution).to.eql({
+                    type: 'version',
+                    tag: 'v0.1.1',
+                    commit: 'cccccccccccccccccccccccccccccccccccccccc'
+                });
+                next();
+            })
+            .done();
+        });
+
+        it('should resolve "*" to the latest version if a repository has valid semver tags, not ignoring pre-releases if they are the only versions', function (next) {
+            var resolver;
+
+            GitResolver.refs = function () {
+                return Q.resolve([
+                    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa refs/heads/master',
+                    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/tags/0.1.0-rc.1',
+                    'cccccccccccccccccccccccccccccccccccccccc refs/tags/0.1.0-rc.2'
+                ]);
+            };
+
+            resolver = create('foo');
+            resolver._findResolution('*')
+            .then(function (resolution) {
+                expect(resolution).to.eql({
+                    type: 'version',
+                    tag: '0.1.0-rc.2',
+                    commit: 'cccccccccccccccccccccccccccccccccccccccc'
+                });
+                next();
+            })
+            .done();
+        });
+
+        it('should resolve "0.1.*" to the latest version if a repository has valid semver tags, not ignoring pre-releases if they are the only versions', function (next) {
+            var resolver;
+
+            GitResolver.refs = function () {
+                return Q.resolve([
+                    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa refs/heads/master',
+                    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/tags/0.1.0-rc.1',
+                    'cccccccccccccccccccccccccccccccccccccccc refs/tags/0.1.0-rc.2'
+                ]);
+            };
+
+            resolver = create('foo');
+            resolver._findResolution('0.1.*')
+            .then(function (resolution) {
+                expect(resolution).to.eql({
+                    type: 'version',
+                    tag: '0.1.0-rc.2',
                     commit: 'cccccccccccccccccccccccccccccccccccccccc'
                 });
                 next();
@@ -501,6 +608,106 @@ describe('GitResolver', function () {
             .done();
         });
 
+        it('should resolve to a branch even if target is a range/version that does not exist', function (next) {
+            var resolver;
+
+            // See #771
+            GitResolver.refs = function () {
+                return Q.resolve([
+                    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa refs/heads/master',
+                    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/heads/3.0.0-wip',
+                    'cccccccccccccccccccccccccccccccccccccccc refs/tags/v0.1.1'
+                ]);
+            };
+
+            resolver = create('foo');
+            resolver._findResolution('3.0.0-wip')
+            .then(function (resolution) {
+                expect(resolution).to.eql({
+                    type: 'branch',
+                    branch: '3.0.0-wip',
+                    commit: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+                });
+                next();
+            })
+            .done();
+        });
+
+        it('should resolve to a tag even if target is a range that does not exist', function (next) {
+            var resolver;
+
+            GitResolver.refs = function () {
+                return Q.resolve([
+                    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa refs/heads/master',
+                    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/tags/1.0'
+                ]);
+            };
+
+            resolver = create('foo');
+            resolver._findResolution('1.0')
+            .then(function (resolution) {
+                expect(resolution).to.eql({
+                    type: 'tag',
+                    tag: '1.0',
+                    commit: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+                });
+                next();
+            })
+            .done();
+        });
+
+        it('should resolve to the latest pre-release version that matches a range/version', function (next) {
+            var resolver;
+
+            GitResolver.refs = function () {
+                return Q.resolve([
+                    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa refs/heads/master',
+                    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/tags/0.1.0',
+                    'cccccccccccccccccccccccccccccccccccccccc refs/tags/v0.1.1',
+                    'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee refs/tags/0.2.0',
+                    'ffffffffffffffffffffffffffffffffffffffff refs/tags/v0.2.1-rc.1'
+                ]);
+            };
+
+            resolver = create('foo');
+            resolver._findResolution('~0.2.1')
+            .then(function (resolution) {
+                expect(resolution).to.eql({
+                    type: 'version',
+                    tag: 'v0.2.1-rc.1',
+                    commit: 'ffffffffffffffffffffffffffffffffffffffff'
+                });
+                next();
+            })
+            .done();
+        });
+
+        it('should resolve to the exact version if exists', function (next) {
+            var resolver;
+
+            GitResolver.refs = function () {
+                return Q.resolve([
+                    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa refs/heads/master',
+                    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/tags/0.8.1',
+                    'cccccccccccccccccccccccccccccccccccccccc refs/tags/0.8.1+build.1',
+                    'dddddddddddddddddddddddddddddddddddddddd refs/tags/0.8.1+build.2',
+                    'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee refs/tags/0.8.1+build.3'
+                ]);
+            };
+
+            resolver = create('foo');
+            resolver._findResolution('0.8.1+build.2')
+            .then(function (resolution) {
+                expect(resolution).to.eql({
+                    type: 'version',
+                    tag: '0.8.1+build.2',
+                    commit: 'dddddddddddddddddddddddddddddddddddddddd'
+                });
+                next();
+            })
+            .done();
+        });
+
         it('should fail to resolve if none of the versions matched a range/version', function (next) {
             var resolver;
 
@@ -519,7 +726,7 @@ describe('GitResolver', function () {
             }, function (err) {
                 expect(err).to.be.an(Error);
                 expect(err.message).to.match(/was able to satisfy ~0.2.0/i);
-                expect(err.details).to.match(/available versions: 0\.1\.1, 0\.1\.0/i);
+                expect(err.details).to.match(/available versions in foo: 0\.1\.1, 0\.1\.0/i);
                 expect(err.code).to.equal('ENORESTARGET');
                 next();
             })
@@ -565,6 +772,27 @@ describe('GitResolver', function () {
                 expect(resolution).to.eql({
                     type: 'commit',
                     commit: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+                });
+                next();
+            })
+            .done();
+        });
+
+        it('should resolve to the specified short commit', function (next) {
+            var resolver;
+
+            GitResolver.refs = function () {
+                return Q.resolve([
+                    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa refs/heads/master'
+                ]);
+            };
+
+            resolver = create('foo');
+            resolver._findResolution('bbbbbbb')
+            .then(function (resolution) {
+                expect(resolution).to.eql({
+                    type: 'commit',
+                    commit: 'bbbbbbb'
                 });
                 next();
             })
@@ -661,10 +889,8 @@ describe('GitResolver', function () {
             var resolver = create('foo');
             var dst = path.join(tempDir, '.git');
 
-            this.timeout(15000);  // Give some time to copy
-
             // Copy .git folder to the tempDir
-            copy.copyDir(path.resolve(__dirname, '../../../.git'), dst, {
+            copy.copyDir(path.resolve(__dirname, '../../assets/package-a/.git'), dst, {
                 mode: 0777
             })
             .then(function () {
@@ -772,6 +998,18 @@ describe('GitResolver', function () {
                 var json = JSON.parse(contents.toString());
                 expect(json._release).to.equal('0.0.1');
             })
+            // Test with type 'version' + build metadata
+            .then(function () {
+                resolver._resolution = { type: 'version', tag: '0.0.1+build.5', commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' };
+                return resolver._savePkgMeta({ name: 'foo' });
+            })
+            .then(function () {
+                return Q.nfcall(fs.readFile, metaFile);
+            })
+            .then(function (contents) {
+                var json = JSON.parse(contents.toString());
+                expect(json._release).to.equal('0.0.1+build.5');
+            })
             // Test with type 'tag'
             .then(function () {
                 resolver._resolution = { type: 'tag', tag: '0.0.1', commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' };
@@ -787,7 +1025,7 @@ describe('GitResolver', function () {
             // Test with type 'branch'
             // In this case, it should be the commit
             .then(function () {
-                resolver._resolution = { type: 'branch', commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' };
+                resolver._resolution = { type: 'branch', branch: 'foo', commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' };
                 return resolver._savePkgMeta({ name: 'foo' });
             })
             .then(function () {
@@ -1025,21 +1263,21 @@ describe('GitResolver', function () {
     describe('#tags', function () {
         afterEach(clearResolverRuntimeCache);
 
-        it('should resolve to an empty array if no tags are found', function (next) {
+        it('should resolve to an empty hash if no tags are found', function (next) {
             GitResolver.refs = function () {
                 return Q.resolve([]);
             };
 
             GitResolver.tags('foo')
             .then(function (tags) {
-                expect(tags).to.be.an('array');
-                expect(tags).to.eql([]);
+                expect(tags).to.be.an('object');
+                expect(tags).to.eql({});
                 next();
             })
             .done();
         });
 
-        it('should resolve to an array of tags', function (next) {
+        it('should resolve to an hash of tags', function (next) {
             GitResolver.refs = function () {
                 return Q.resolve([
                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa refs/heads/master',
@@ -1262,8 +1500,8 @@ describe('GitResolver', function () {
             .then(function (versions) {
                 expect(versions).to.eql([
                     { version: '0.2.1', tag: 'v0.2.1', commit: 'abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
-                    { version: '0.1.1', tag: '0.1.1+build.11', commit: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
-                    { version: '0.1.1', tag: '0.1.1+build.100', commit: 'cccccccccccccccccccccccccccccccccccccccc' },
+                    { version: '0.1.1+build.11', tag: '0.1.1+build.11', commit: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
+                    { version: '0.1.1+build.100', tag: '0.1.1+build.100', commit: 'cccccccccccccccccccccccccccccccccccccccc' },
                     { version: '0.1.1', tag: '0.1.1', commit: 'ffffffffffffffffffffffffffffffffffffffff' },
                     { version: '0.1.1-rc.200', tag: '0.1.1-rc.200', commit: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' },
                     { version: '0.1.1-rc.22', tag: '0.1.1-rc.22', commit: 'dddddddddddddddddddddddddddddddddddddddd' },

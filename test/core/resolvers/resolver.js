@@ -1,23 +1,32 @@
 var expect = require('expect.js');
-var fs = require('graceful-fs');
+var fs = require('../../../lib/util/fs');
 var path = require('path');
 var util = require('util');
-var rimraf = require('rimraf');
+var rimraf = require('../../../lib/util/rimraf');
 var mkdirp = require('mkdirp');
 var tmp = require('tmp');
 var Q = require('q');
+var Logger = require('bower-logger');
 var cmd = require('../../../lib/util/cmd');
 var copy = require('../../../lib/util/copy');
 var Resolver = require('../../../lib/core/resolvers/Resolver');
-var Logger = require('../../../lib/core/Logger');
 var defaultConfig = require('../../../lib/config');
 
 describe('Resolver', function () {
-    var tempDir = path.resolve(__dirname, '../../assets/tmp');
-    var testPackage = path.resolve(__dirname, '../../assets/github-test-package');
+    var tempDir = path.resolve(__dirname, '../../tmp/tmp');
+    var testPackage = path.resolve(__dirname, '../../assets/package-a');
     var logger;
+    var dirMode0777;
+    var config = defaultConfig();
 
     before(function () {
+        var stat;
+
+        mkdirp.sync(tempDir);
+        stat = fs.statSync(tempDir);
+        dirMode0777 = stat.mode;
+        rimraf.sync(tempDir);
+
         logger = new Logger();
     });
 
@@ -25,12 +34,12 @@ describe('Resolver', function () {
         logger.removeAllListeners();
     });
 
-    function create(decEndpoint, config) {
+    function create(decEndpoint) {
         if (typeof decEndpoint === 'string') {
             decEndpoint = { source: decEndpoint };
         }
 
-        return new Resolver(decEndpoint, config || defaultConfig, logger);
+        return new Resolver(decEndpoint, config, logger);
     }
 
     describe('.getSource', function () {
@@ -106,7 +115,7 @@ describe('Resolver', function () {
             })
             .done();
 
-            resolver.hasNew(tempDir)
+            resolver.hasNew({})
             .then(function () {
                 succeeded = true;
             }, function (err) {
@@ -120,17 +129,17 @@ describe('Resolver', function () {
             var resolver = create('foo');
             var succeeded;
 
-            resolver.hasNew(tempDir)
+            resolver.hasNew({})
             .then(function () {
                 // Test if hasNew can be called again when done
-                resolver.hasNew(tempDir)
+                resolver.hasNew({})
                 .then(function () {
                     next(succeeded ? new Error('Should have failed') : null);
                 });
             })
             .done();
 
-            resolver.hasNew(tempDir)
+            resolver.hasNew({})
             .then(function () {
                 succeeded = true;
             }, function (err) {
@@ -143,7 +152,7 @@ describe('Resolver', function () {
         it('should resolve to true by default', function (next) {
             var resolver = create('foo');
 
-            resolver.hasNew(tempDir)
+            resolver.hasNew({})
             .then(function (hasNew) {
                 expect(hasNew).to.equal(true);
                 next();
@@ -151,32 +160,17 @@ describe('Resolver', function () {
             .done();
         });
 
-        it('should resolve to true if the there\'s an error reading the package meta', function (next) {
+        it('should call _hasNew with the package meta', function (next) {
             var resolver = create('foo');
-
-            rimraf.sync(path.join(tempDir, '.bower.json'));
-            resolver.hasNew(tempDir)
-            .then(function (hasNew) {
-                expect(hasNew).to.equal(true);
-                next();
-            })
-            .done();
-        });
-
-        it('should call _hasNew with the canonical dir and the package meta', function (next) {
-            var resolver = create('foo');
-            var canonical;
             var meta;
 
-            resolver._hasNew = function (canonicalDir, pkgMeta) {
-                canonical = canonicalDir;
+            resolver._hasNew = function (pkgMeta) {
                 meta = pkgMeta;
                 return Q.resolve(true);
             };
 
-            resolver.hasNew(tempDir)
+            resolver.hasNew({ name: 'test' })
             .then(function () {
-                expect(canonical).to.equal(tempDir);
                 expect(meta).to.be.an('object');
                 expect(meta.name).to.equal('test');
                 next();
@@ -188,12 +182,12 @@ describe('Resolver', function () {
             var resolver = create('foo');
             var meta;
 
-            resolver._hasNew = function (canonicalDir, pkgMeta) {
+            resolver._hasNew = function (pkgMeta) {
                 meta = pkgMeta;
                 return Q.resolve(true);
             };
 
-            resolver.hasNew(tempDir, {
+            resolver.hasNew({
                 name: 'foo'
             })
             .then(function () {
@@ -252,10 +246,10 @@ describe('Resolver', function () {
 
             resolver._resolve = function () {};
 
-            resolver.hasNew(tempDir)
+            resolver.hasNew({})
             .then(function () {
                 // Test if hasNew can be called again when done
-                resolver.hasNew(tempDir)
+                resolver.hasNew({})
                 .then(function () {
                     next(succeeded ? new Error('Should have failed') : null);
                 });
@@ -325,7 +319,7 @@ describe('Resolver', function () {
                 }.bind(this));
             };
 
-            resolver = new DummyResolver({ source: 'foo'}, defaultConfig, logger);
+            resolver = new DummyResolver({ source: 'foo'}, config, logger);
 
             resolver.resolve()
             .then(function () {
@@ -438,21 +432,7 @@ describe('Resolver', function () {
     });
 
     describe('._createTempDir', function () {
-        var dirMode0777;
-
-        before(function () {
-            var stat;
-
-            mkdirp.sync(tempDir);
-            stat = fs.statSync(tempDir);
-            dirMode0777 = stat.mode;
-        });
-
-        after(function (next) {
-            rimraf(tempDir, next);
-        });
-
-        it('should create a directory inside a bower folder, located within the OS temp folder', function (next) {
+        it('should create a directory inside a "username/bower" folder, located within the OS temp folder', function (next) {
             var resolver = create('foo');
 
             resolver._createTempDir()
@@ -466,8 +446,11 @@ describe('Resolver', function () {
                 dirname = path.dirname(dir);
                 osTempDir = path.resolve(tmp.tmpdir);
 
+                expect(dir.indexOf(osTempDir)).to.be(0);
+                expect(dir.indexOf(config.tmp)).to.be(0);
+
                 expect(path.basename(dirname)).to.equal('bower');
-                expect(path.dirname(dirname)).to.equal(osTempDir);
+                expect(path.dirname(path.dirname(dirname))).to.equal(osTempDir);
                 next();
             })
             .done();
@@ -488,15 +471,15 @@ describe('Resolver', function () {
         });
 
         it('should remove the folder after execution', function (next) {
-            var bowerOsTempDir = path.join(tmp.tmpdir, 'bower');
+            this.timeout(15000);  // Give some time to execute
 
-            rimraf(bowerOsTempDir, function (err) {
+            rimraf(config.tmp, function (err) {
                 if (err) return next(err);
 
                 cmd('node', ['test/assets/test-temp-dir/test.js'], { cwd: path.resolve(__dirname, '../../..') })
                 .then(function () {
-                    expect(fs.existsSync(bowerOsTempDir)).to.be(true);
-                    expect(fs.readdirSync(bowerOsTempDir)).to.eql([]);
+                    expect(fs.existsSync(config.tmp)).to.be(true);
+                    expect(fs.readdirSync(config.tmp)).to.eql([]);
                     next();
                 }, function (err) {
                     next(new Error(err.details));
@@ -506,17 +489,15 @@ describe('Resolver', function () {
         });
 
         it('should remove the folder on an uncaught exception', function (next) {
-            var bowerOsTempDir = path.join(tmp.tmpdir, 'bower');
-
-            rimraf(bowerOsTempDir, function (err) {
+            rimraf(config.tmp, function (err) {
                 if (err) return next(err);
 
                 cmd('node', ['test/assets/test-temp-dir/test-exception.js'], { cwd: path.resolve(__dirname, '../../..') })
                 .then(function () {
                     next(new Error('The command should have failed'));
                 }, function () {
-                    expect(fs.existsSync(bowerOsTempDir)).to.be(true);
-                    expect(fs.readdirSync(bowerOsTempDir)).to.eql([]);
+                    expect(fs.existsSync(config.tmp)).to.be(true);
+                    expect(fs.readdirSync(config.tmp)).to.eql([]);
                     next();
                 })
                 .done();
@@ -530,6 +511,72 @@ describe('Resolver', function () {
             .then(function (dir) {
                 expect(resolver._tempDir).to.be.ok();
                 expect(resolver._tempDir).to.equal(dir);
+                next();
+            })
+            .done();
+        });
+
+        it('should remove @ from directory names', function (next) {
+            var resolver = create('foo@bar');
+
+            resolver._createTempDir()
+            .then(function (dir) {
+                expect(resolver._tempDir).to.be.ok();
+                expect(resolver._tempDir.indexOf('@')).to.equal(-1);
+                next();
+            })
+            .done();
+        });
+    });
+
+    describe('._cleanTempDir', function () {
+        it('should not error out if temporary dir is not yet created', function (next) {
+            var resolver = create('foo');
+
+            resolver._cleanTempDir()
+            .then(next.bind(null))
+            .done();
+        });
+
+        it('should delete the temporary folder contents', function (next) {
+            var resolver = create('foo');
+
+            resolver._createTempDir()
+            .then(resolver._cleanTempDir.bind(resolver))
+            .then(function (dir) {
+                expect(dir).to.equal(resolver.getTempDir());
+                expect(fs.readdirSync(dir).length).to.be(0);
+                next();
+            })
+            .done();
+        });
+
+        it('should keep the mode', function (next) {
+            var resolver = create('foo');
+
+            resolver._createTempDir()
+            .then(resolver._cleanTempDir.bind(resolver))
+            .then(function (dir) {
+                var stat = fs.statSync(dir);
+                var expectedMode = dirMode0777 & ~process.umask();
+
+                expect(stat.mode).to.equal(expectedMode);
+                next();
+            })
+            .done();
+        });
+
+        it('should keep the dir path', function (next) {
+            var resolver = create('foo');
+            var tempDir;
+
+            resolver._createTempDir()
+            .then(function (dir) {
+                tempDir = dir;
+                return resolver._cleanTempDir();
+            })
+            .then(function (dir) {
+                expect(dir).to.equal(tempDir);
                 next();
             })
             .done();
@@ -627,14 +674,14 @@ describe('Resolver', function () {
             .done();
         });
 
-        it('should remove files that match the ignore patterns', function (next) {
+        it('should remove files that match the ignore patterns excluding main files', function (next) {
             var resolver = create({ source: 'foo', name: 'foo' });
 
             mkdirp.sync(tempDir);
 
             // Checkout test package version 0.2.1 which has a bower.json
             // with ignores
-            cmd('git', ['checkout', '0.2.1'], { cwd: testPackage })
+            cmd('git', ['checkout', '0.2.2'], { cwd: testPackage })
             // Copy its contents to the temporary dir
             .then(function () {
                 return copy.copyDir(testPackage, tempDir);
@@ -650,7 +697,12 @@ describe('Resolver', function () {
                 return resolver._applyPkgMeta(json)
                 .then(function () {
                     expect(fs.existsSync(path.join(tempDir, 'foo'))).to.be(true);
+                    expect(fs.existsSync(path.join(tempDir, 'baz'))).to.be(true);
                     expect(fs.existsSync(path.join(tempDir, 'test'))).to.be(false);
+                    expect(fs.existsSync(path.join(tempDir, 'bower.json'))).to.be(true);
+                    expect(fs.existsSync(path.join(tempDir, 'main.js'))).to.be(true);
+                    expect(fs.existsSync(path.join(tempDir, 'more/docs'))).to.be(false);
+                    expect(fs.existsSync(path.join(tempDir, 'more/assets'))).to.be(false);
                     next();
                 });
             })
@@ -731,6 +783,89 @@ describe('Resolver', function () {
                 });
             })
             .done();
+        });
+
+        it('should warn user for missing attributes in bower.json', function (next) {
+            var resolver = create('fooooo');
+            resolver._tempDir = tempDir;
+            var notifiedCount = 0;
+            logger.on('log', function (log) {
+                notifiedCount ++;
+                expect(log).to.be.an('object');
+                expect(log.level).to.be('warn');
+                if (notifiedCount === 1) {
+                    expect(log.message).to.contain('bar is missing "main" entry in bower.json');
+                } else {
+                    expect(log.message).to.contain('bar is missing "ignore" entry in bower.json');
+                }
+            });
+            resolver._savePkgMeta({ name: 'bar' });
+            expect(notifiedCount).to.be(2);
+
+            resolver._savePkgMeta({ name: 'bar', main: 'foo' });
+            expect(notifiedCount).to.be(3);
+
+            // should not warn again
+            resolver._savePkgMeta({ name: 'bar', main: 'flart', ignore: 'blat' });
+            expect(notifiedCount).to.be(3);
+            next();
+        });
+    });
+
+    describe('#isTargetable', function () {
+        it('should return true by default', function () {
+            expect(Resolver.isTargetable()).to.be(true);
+        });
+    });
+
+    describe('#versions', function () {
+        it('should resolve to an array by default', function (next) {
+            Resolver.versions()
+            .then(function (versions) {
+                expect(versions).to.be.an('array');
+                expect(versions.length).to.be(0);
+
+                next();
+            })
+            .done();
+        });
+
+    });
+
+    describe('#isCacheable', function () {
+        it('caches for normal name', function () {
+            var resolver = new Resolver({ source: 'foo' });
+            expect(resolver.isCacheable()).to.be(true);
+        });
+
+        it('does not cache for absolute paths', function () {
+            var resolver = new Resolver({ source: '/foo' });
+            expect(resolver.isCacheable()).to.be(false);
+        });
+
+        it('does not cache for relative paths', function () {
+            var resolver = new Resolver({ source: './foo' });
+            expect(resolver.isCacheable()).to.be(false);
+        });
+
+        it('does not cache for parent paths', function () {
+            var resolver = new Resolver({ source: '../foo' });
+            expect(resolver.isCacheable()).to.be(false);
+        });
+
+        it('does not cache for file:/// prefix', function () {
+            var resolver = new Resolver({ source: 'file:///foo' });
+            expect(resolver.isCacheable()).to.be(false);
+        });
+
+        it('does not cache for windows paths', function () {
+            var resolver = new Resolver({ source: '..\\foo' });
+            expect(resolver.isCacheable()).to.be(false);
+        });
+
+        it('does not cache for windows absolute paths', function () {
+            var resolver = new Resolver({ source: 'C:\\foo' });
+            expect(resolver.isCacheable()).to.be(false);
         });
     });
 });
